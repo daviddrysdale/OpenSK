@@ -96,6 +96,22 @@ impl<'a> Writer<'a> {
                 self.encode_cbor(*inner_value, remaining_depth.map(|d| d - 1))?;
             }
             Value::Simple(simple_value) => self.start_item(type_label, simple_value as u64),
+            Value::Float32(f) => {
+                self.encoded_cbor.push(
+                    (type_label << Constants::MAJOR_TYPE_BIT_SHIFT)
+                        | Constants::ADDITIONAL_INFORMATION_4_BYTES,
+                );
+                let data: [u8; 4] = f.to_be_bytes();
+                self.encoded_cbor.extend(&data[..]);
+            }
+            Value::Float64(f) => {
+                self.encoded_cbor.push(
+                    (type_label << Constants::MAJOR_TYPE_BIT_SHIFT)
+                        | Constants::ADDITIONAL_INFORMATION_8_BYTES,
+                );
+                let data: [u8; 8] = f.to_be_bytes();
+                self.encoded_cbor.extend(&data[..]);
+            }
         }
         Ok(())
     }
@@ -548,5 +564,43 @@ mod test {
         assert!(writer.encode_cbor(cbor_map.clone(), None).is_ok());
         writer = Writer::new(&mut buf);
         assert!(writer.encode_cbor(cbor_map, Some(4)).is_err());
+    }
+
+    #[test]
+    fn test_write_float32() {
+        let cases = vec![
+            (3.14159265, vec![0xFA, 0x40, 0x49, 0x0F, 0xDB]),
+            (0.0000000000001, vec![0xFA, 0x29, 0xE1, 0x2E, 0x13]),
+            (-1234567.89, vec![0xFA, 0xC9, 0x96, 0xB4, 0x3F]),
+        ];
+        for (f, cbor) in cases {
+            let mut buf = Vec::new();
+            write(Value::Float32(f), &mut buf).unwrap();
+            assert_eq!(buf, cbor);
+        }
+    }
+
+    #[test]
+    fn test_write_float64() {
+        let cases = vec![
+            (
+                3.14159265,
+                vec![0xFB, 0x40, 0x09, 0x21, 0xFB, 0x53, 0xC8, 0xD4, 0xF1],
+            ),
+            (
+                0.0000000000001,
+                vec![0xFB, 0x3D, 0x3C, 0x25, 0xC2, 0x68, 0x49, 0x76, 0x82],
+            ),
+            (
+                -1234567.89,
+                vec![0xFB, 0xC1, 0x32, 0xD6, 0x87, 0xE3, 0xD7, 0x0A, 0x3D],
+            ),
+        ];
+
+        for (f, cbor) in cases {
+            let mut buf = Vec::new();
+            write(Value::Float64(f), &mut buf).unwrap();
+            assert_eq!(buf, cbor);
+        }
     }
 }

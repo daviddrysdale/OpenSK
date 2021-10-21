@@ -38,6 +38,10 @@ pub enum Value {
     Tag(u64, Box<Value>),
     /// Simple value.
     Simple(SimpleValue),
+    /// Single-precision float.
+    Float32(f32),
+    /// Double-precision float.
+    Float64(f64),
 }
 
 /// Specific simple CBOR values.
@@ -68,6 +72,13 @@ impl Constants {
     pub const ADDITIONAL_INFORMATION_4_BYTES: u8 = 26;
     /// Additional information value indicating that an 8-byte length follows.
     pub const ADDITIONAL_INFORMATION_8_BYTES: u8 = 27;
+
+    /// Type byte for a half-precision floating point value.
+    pub const TYPE_BYTE_FLOAT_HALF_PRECISION: u8 = (7 << 5) | 25;
+    /// Type byte for a single-precision floating point value.
+    pub const TYPE_BYTE_FLOAT_SINGLE_PRECISION: u8 = (7 << 5) | 26;
+    /// Type byte for a double-precision floating point value.
+    pub const TYPE_BYTE_FLOAT_DOUBLE_PRECISION: u8 = (7 << 5) | 27;
 }
 
 impl Value {
@@ -92,8 +103,6 @@ impl Value {
 
     /// Return the major type for the [`Value`].
     pub fn type_label(&self) -> u8 {
-        // TODO use enum discriminant instead when stable
-        // https://github.com/rust-lang/rust/issues/60553
         match self {
             Value::Unsigned(_) => 0,
             Value::Negative(_) => 1,
@@ -103,6 +112,8 @@ impl Value {
             Value::Map(_) => 5,
             Value::Tag(_, _) => 6,
             Value::Simple(_) => 7,
+            Value::Float32(_) => 7,
+            Value::Float64(_) => 7,
         }
     }
 }
@@ -110,7 +121,7 @@ impl Value {
 impl Ord for Value {
     fn cmp(&self, other: &Value) -> Ordering {
         use super::values::Value::{
-            Array, ByteString, Map, Negative, Simple, Tag, TextString, Unsigned,
+            Array, ByteString, Float32, Float64, Map, Negative, Simple, Tag, TextString, Unsigned,
         };
         let self_type_value = self.type_label();
         let other_type_value = other.type_label();
@@ -147,7 +158,16 @@ impl Ord for Value {
                 ordering
             }
             (Tag(t1, v1), Tag(t2, v2)) => t1.cmp(t2).then(v1.cmp(v2)),
+            // Simple, Float32 and Float64 share a type value so cover all combinations.
             (Simple(s1), Simple(s2)) => s1.cmp(s2),
+            (Simple(_), Float32(_)) => Ordering::Less,
+            (Simple(_), Float64(_)) => Ordering::Less,
+            (Float32(_), Simple(_)) => Ordering::Greater,
+            (Float32(f1), Float32(f2)) => f1.to_be_bytes().cmp(&f2.to_be_bytes()),
+            (Float32(_), Float64(_)) => Ordering::Less,
+            (Float64(_), Simple(_)) => Ordering::Greater,
+            (Float64(_), Float32(_)) => Ordering::Greater,
+            (Float64(f1), Float64(f2)) => f1.to_be_bytes().cmp(&f2.to_be_bytes()),
             (_, _) => {
                 // The case of different major types is caught above.
                 unreachable!();
@@ -198,6 +218,18 @@ impl From<i64> for Value {
 impl From<i32> for Value {
     fn from(i: i32) -> Self {
         Value::integer(i as i64)
+    }
+}
+
+impl From<f32> for Value {
+    fn from(f: f32) -> Self {
+        Value::Float32(f)
+    }
+}
+
+impl From<f64> for Value {
+    fn from(f: f64) -> Self {
+        Value::Float64(f)
     }
 }
 
@@ -279,7 +311,10 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{cbor_array, cbor_bool, cbor_bytes, cbor_int, cbor_map, cbor_tagged, cbor_text};
+    use crate::{
+        cbor_array, cbor_bool, cbor_bytes, cbor_float32, cbor_float64, cbor_int, cbor_map,
+        cbor_tagged, cbor_text,
+    };
     use alloc::vec;
 
     #[test]
@@ -329,6 +364,8 @@ mod test {
         assert!(cbor_bool!(false) < cbor_bool!(true));
         assert!(cbor_bool!(true) < Value::Simple(SimpleValue::NullValue));
         assert!(Value::Simple(SimpleValue::NullValue) < Value::Simple(SimpleValue::Undefined));
+        assert!(cbor_float32!(0.1) < cbor_float32!(0.2));
+        assert!(cbor_float32!(0.1) < cbor_float64!(0.1));
         assert!(cbor_tagged!(1, cbor_text!("s")) < cbor_tagged!(2, cbor_int!(0)));
         assert!(cbor_int!(1) < cbor_int!(-1));
         assert!(cbor_int!(1) < cbor_bytes!(vec![0x00]));
@@ -356,5 +393,60 @@ mod test {
         assert!(cbor_array![] < cbor_tagged!(2, cbor_int!(0)));
         assert!(cbor_array![] < cbor_bool!(false));
         assert!(cbor_tagged!(1, cbor_text!("s")) < cbor_bool!(false));
+    }
+
+    #[test]
+    fn test_float_value_ordering() {
+        use crate::{cbor_float32, cbor_float64};
+
+        assert!(cbor_int!(1) < cbor_float32!(0.0));
+        assert!(cbor_int!(-1) < cbor_float32!(0.0));
+        assert!(cbor_bytes!(vec![0x00]) < cbor_float32!(0.0));
+        assert!(cbor_text!("") < cbor_float32!(0.0));
+        assert!(cbor_array![] < cbor_float32!(0.0));
+        assert!(cbor_map! {0=>0} < cbor_float32!(0.0));
+        assert!(cbor_bool!(false) < cbor_float32!(0.0));
+        assert!(cbor_bool!(true) < cbor_float32!(0.0));
+        assert!(Value::Simple(SimpleValue::NullValue) < cbor_float32!(0.0));
+
+        assert!(cbor_int!(1) < cbor_float64!(0.0));
+        assert!(cbor_int!(-1) < cbor_float64!(0.0));
+        assert!(cbor_bytes!(vec![0x00]) < cbor_float64!(0.0));
+        assert!(cbor_text!("") < cbor_float64!(0.0));
+        assert!(cbor_array![] < cbor_float64!(0.0));
+        assert!(cbor_map! {0=>0} < cbor_float64!(0.0));
+        assert!(cbor_bool!(false) < cbor_float64!(0.0));
+        assert!(cbor_bool!(true) < cbor_float64!(0.0));
+        assert!(Value::Simple(SimpleValue::NullValue) < cbor_float64!(0.0));
+        assert!(cbor_float32!(0.0) < cbor_float64!(0.0));
+        assert!(cbor_float32!(100.0) < cbor_float64!(0.0));
+
+        assert!(cbor_float32!(0.0) > cbor_int!(1));
+        assert!(cbor_float32!(0.0) > cbor_int!(-1));
+        assert!(cbor_float32!(0.0) > cbor_bytes!(vec![0x00]));
+        assert!(cbor_float32!(0.0) > cbor_text!(""));
+        assert!(cbor_float32!(0.0) > cbor_array![]);
+        assert!(cbor_float32!(0.0) > cbor_map! {0=>0});
+        assert!(cbor_float32!(0.0) > cbor_bool!(false));
+        assert!(cbor_float32!(0.0) > cbor_bool!(true));
+        assert!(cbor_float32!(0.0) > Value::Simple(SimpleValue::NullValue));
+
+        assert!(cbor_float64!(0.0) > cbor_int!(1));
+        assert!(cbor_float64!(0.0) > cbor_int!(-1));
+        assert!(cbor_float64!(0.0) > cbor_bytes!(vec![0x00]));
+        assert!(cbor_float64!(0.0) > cbor_text!(""));
+        assert!(cbor_float64!(0.0) > cbor_array![]);
+        assert!(cbor_float64!(0.0) > cbor_map! {0=>0});
+        assert!(cbor_float64!(0.0) > cbor_bool!(false));
+        assert!(cbor_float64!(0.0) > cbor_bool!(true));
+        assert!(cbor_float64!(0.0) > Value::Simple(SimpleValue::NullValue));
+        assert!(cbor_float64!(0.0) > cbor_float32!(0.0));
+        assert!(cbor_float64!(0.0) > cbor_float32!(100.0));
+
+        // For normal floats, the `Eq` trait can't be implemented (only `PartialEq`) because NaN is not equal to NaN.
+        // For CBOR-encoded floats, the comparison is based purely on the bytes of the encoded form, so...
+        assert_eq!(cbor_float32!(f32::NAN), cbor_float32!(f32::NAN));
+        assert_eq!(cbor_float64!(f64::NAN), cbor_float64!(f64::NAN));
+        assert!(cbor_float32!(f32::NAN) < cbor_float64!(f64::NAN));
     }
 }

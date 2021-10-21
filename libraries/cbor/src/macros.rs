@@ -304,6 +304,22 @@ macro_rules! cbor_bool {
     };
 }
 
+/// Creates a CBOR Value of type Float32 with the given floating point value.
+#[macro_export]
+macro_rules! cbor_float32 {
+    ( $x:expr ) => {
+        $crate::values::Value::Float32($x)
+    };
+}
+
+/// Creates a CBOR Value of type Float64 with the given floating point value.
+#[macro_export]
+macro_rules! cbor_float64 {
+    ( $x:expr ) => {
+        $crate::values::Value::Float64($x)
+    };
+}
+
 /// Creates a CBOR Value of type Unsigned with the given numeric value.
 #[macro_export]
 macro_rules! cbor_unsigned {
@@ -718,5 +734,20 @@ mod test {
         assert_eq!(x3, Some(cbor_unsigned!(30)));
         assert_eq!(x4, Some(cbor_unsigned!(40)));
         assert_eq!(x5, None);
+    }
+
+    #[test]
+    fn test_cbor_float() {
+        assert_eq!(cbor_float32!(1.0f32), Value::Float32(1.0));
+        assert_eq!(cbor_float64!(1.0f64), Value::Float64(1.0));
+        assert_eq!(cbor_float32!(-3.14159265), Value::Float32(-3.14159265));
+        assert_eq!(cbor_float64!(-3.14159265), Value::Float64(-3.14159265));
+        assert_eq!(cbor_float32!(0.0), Value::Float32(0.0));
+        assert_eq!(cbor_float64!(0.0), Value::Float64(0.0));
+        assert_eq!(cbor_float32!(3.14159265), Value::Float32(3.14159265));
+        assert_eq!(cbor_float64!(3.14159265), Value::Float64(3.14159265));
+
+        assert_eq!(cbor_float32!(f32::NAN), Value::Float32(f32::NAN));
+        assert_eq!(cbor_float64!(f64::NAN), Value::Float64(f64::NAN));
     }
 }

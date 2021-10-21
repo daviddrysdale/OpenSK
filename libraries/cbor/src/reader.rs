@@ -20,6 +20,7 @@ use crate::{
 };
 use alloc::str;
 use alloc::vec::Vec;
+use core::convert::TryInto;
 
 /// Possible errors from a deserialization operation.
 #[derive(Debug, PartialEq)]
@@ -56,6 +57,12 @@ pub fn read_nested(encoded_cbor: &[u8], max_nest: Option<i8>) -> Result<Value, D
     Ok(value)
 }
 
+/// Indicate whether a type byte corresponds to a supported floating point type.
+fn is_float_type(val: u8) -> bool {
+    val == Constants::TYPE_BYTE_FLOAT_SINGLE_PRECISION
+        || val == Constants::TYPE_BYTE_FLOAT_DOUBLE_PRECISION
+}
+
 struct Reader<'a> {
     remaining_cbor: &'a [u8],
 }
@@ -80,17 +87,22 @@ impl<'a> Reader<'a> {
                 // Unsigned byte means logical shift, so only zeros get shifted in.
                 let major_type_value = first_byte >> Constants::MAJOR_TYPE_BIT_SHIFT;
                 let additional_info = first_byte & Constants::ADDITIONAL_INFORMATION_MASK;
-                let size_value = self.read_variadic_length_integer(additional_info)?;
-                match major_type_value {
-                    0 => self.decode_value_to_unsigned(size_value),
-                    1 => self.decode_value_to_negative(size_value),
-                    2 => self.read_byte_string_content(size_value),
-                    3 => self.read_text_string_content(size_value),
-                    4 => self.read_array_content(size_value, remaining_depth),
-                    5 => self.read_map_content(size_value, remaining_depth),
-                    6 => self.read_tagged_content(size_value, remaining_depth),
-                    7 => self.decode_to_simple_value(size_value, additional_info),
-                    _ => Err(DecoderError::UnsupportedMajorType),
+
+                if is_float_type(*first_byte) {
+                    self.decode_to_float(additional_info)
+                } else {
+                    let size_value = self.read_variadic_length_integer(additional_info)?;
+                    match major_type_value {
+                        0 => self.decode_value_to_unsigned(size_value),
+                        1 => self.decode_value_to_negative(size_value),
+                        2 => self.read_byte_string_content(size_value),
+                        3 => self.read_text_string_content(size_value),
+                        4 => self.read_array_content(size_value, remaining_depth),
+                        5 => self.read_map_content(size_value, remaining_depth),
+                        6 => self.read_tagged_content(size_value, remaining_depth),
+                        7 => self.decode_to_simple_value(size_value, additional_info),
+                        _ => Err(DecoderError::UnsupportedMajorType),
+                    }
                 }
             }
             _ => Err(DecoderError::IncompleteCborData),
@@ -223,6 +235,30 @@ impl<'a> Reader<'a> {
         match SimpleValue::from_integer(size_value) {
             Some(simple_value) => Ok(Value::Simple(simple_value)),
             None => Err(DecoderError::UnsupportedSimpleValue),
+        }
+    }
+
+    fn decode_to_float(&mut self, additional_info: u8) -> Result<Value, DecoderError> {
+        match additional_info {
+            Constants::ADDITIONAL_INFORMATION_4_BYTES => match self.read_bytes(4) {
+                Some(bytes) => {
+                    let data: [u8; 4] = bytes
+                        .try_into()
+                        .map_err(|_e| DecoderError::IncompleteCborData)?;
+                    Ok(Value::Float32(f32::from_be_bytes(data)))
+                }
+                None => Err(DecoderError::IncompleteCborData),
+            },
+            Constants::ADDITIONAL_INFORMATION_8_BYTES => match self.read_bytes(8) {
+                Some(bytes) => {
+                    let data: [u8; 8] = bytes
+                        .try_into()
+                        .map_err(|_e| DecoderError::IncompleteCborData)?;
+                    Ok(Value::Float64(f64::from_be_bytes(data)))
+                }
+                None => Err(DecoderError::IncompleteCborData),
+            },
+            _ => Err(DecoderError::UnsupportedFloatingPointValue),
         }
     }
 }
@@ -624,12 +660,59 @@ mod test {
     }
 
     #[test]
-    fn test_read_unsupported_floating_point_numbers() {
+    fn test_read_float32() {
         let cases = vec![
-            vec![0xF9, 0x10, 0x00],
-            vec![0xFA, 0x10, 0x00, 0x00, 0x00],
-            vec![0xFB, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            (3.14159265, vec![0xFA, 0x40, 0x49, 0x0F, 0xDB]),
+            (0.0000000000001, vec![0xFA, 0x29, 0xE1, 0x2E, 0x13]),
+            (-1234567.89, vec![0xFA, 0xC9, 0x96, 0xB4, 0x3F]),
         ];
+        for (want, cbor) in cases {
+            let got = match read(&cbor).unwrap() {
+                Value::Float32(f) => f,
+                v => panic!("unexpected type for {:?}", v),
+            };
+            assert!(
+                (got - want) / want < 0.00001,
+                "got: {}, want: {}",
+                got,
+                want
+            );
+        }
+    }
+
+    #[test]
+    fn test_read_float64() {
+        let cases = vec![
+            (
+                3.14159265,
+                vec![0xFB, 0x40, 0x09, 0x21, 0xFB, 0x53, 0xC8, 0xD4, 0xF1],
+            ),
+            (
+                0.0000000000001,
+                vec![0xFB, 0x3D, 0x3C, 0x25, 0xC2, 0x68, 0x49, 0x76, 0x82],
+            ),
+            (
+                -1234567.89,
+                vec![0xFB, 0xC1, 0x32, 0xD6, 0x87, 0xE3, 0xD7, 0x0A, 0x3D],
+            ),
+        ];
+        for (want, cbor) in cases {
+            let got = match read(&cbor).unwrap() {
+                Value::Float64(f) => f,
+                v => panic!("unexpected type for {:?}", v),
+            };
+            assert!(
+                (got - want) / want < 0.00001,
+                "got: {}, want: {}",
+                got,
+                want
+            );
+        }
+    }
+
+    #[test]
+    fn test_read_unsupported_floating_point_numbers() {
+        let cases = vec![vec![0xF9, 0x10, 0x00]];
         for cbor in cases {
             assert_eq!(
                 read(&cbor),
